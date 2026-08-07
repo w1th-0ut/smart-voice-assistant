@@ -8,3 +8,5 @@ venv/
 *.wav
 *.mp3
 *.log
+models/
+*.bin
