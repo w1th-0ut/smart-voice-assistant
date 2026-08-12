@@ -31,14 +31,21 @@ def get_system_prompt():
         "4. 严禁 Markdown 格式，严禁解释纠错过程。"
     )
 
-def ask_llm(prompt):
+def ask_llm(prompt, history_messages=None):
+    if history_messages is None:
+        history_messages = []
+
+    system_message = {
+        'role': 'system',
+        'content': get_system_prompt()
+    }
+    
+    full_messages = [system_message] + history_messages + [{'role': 'user', 'content': prompt}]
+
     try:
         response = ollama.chat(
             model='qwen2.5:1.5b',
-            messages=[
-                {'role': 'system', 'content': get_system_prompt()},
-                {'role': 'user', 'content': prompt}
-            ],
+            messages=full_messages,
             options={
                 'num_predict': 50,
                 'temperature': 0.3
@@ -49,9 +56,13 @@ def ask_llm(prompt):
         return f"大模型响应失败: {str(e)}"
 
 # 3. 意图解析与回复策略
-def process_intent(text):
+def process_intent(text, history_messages=None):
     text_clean = text.lower().strip()
     
+    # 检查重置记忆指令
+    if any(kw in text_clean for kw in ["清空历史", "重置历史", "重新开始", "清空记忆"]):
+        return {"type": "reset", "reply": "已为您清空对话历史。"}
+
     # 硬件控制指令保留强匹配规则
     if ("打" in text_clean or "开" in text_clean) and "灯" in text_clean:
         return {"type": "action", "action": "LED_ON", "reply": "好的，已为您打开灯光。"}
@@ -60,11 +71,15 @@ def process_intent(text):
     
     # 其他所有语句（包括模糊/识别有误的句子）全部交给智能大模型进行自动纠错与回答
     print(f"--> [原始语音识别结果]: '{text}'")
-    ai_reply = ask_llm(text)
+    ai_reply = ask_llm(text, history_messages)
     return {"type": "chat", "reply": ai_reply}
+
+# ================= 全局对话历史 =================
+GLOBAL_SESSION_HISTORY = []
 
 # 4. WebSocket 服务端处理逻辑
 async def audio_handler(websocket):
+    global GLOBAL_SESSION_HISTORY
     print("\n[Client Connected] 客户端已连接 WebSocket！")
     audio_buffer = []
 
@@ -96,7 +111,20 @@ async def audio_handler(websocket):
                 print(f"[识别结果]: '{recognized_text}'")
 
                 if recognized_text:
-                    result = process_intent(recognized_text)
+                    result = process_intent(recognized_text, GLOBAL_SESSION_HISTORY)
+                    
+                    if result["type"] == "reset":
+                        GLOBAL_SESSION_HISTORY.clear()
+                    elif result["type"] == "chat":
+                        ai_reply = result["reply"]
+                        # 更新全局历史记忆
+                        GLOBAL_SESSION_HISTORY.append({'role': 'user', 'content': recognized_text})
+                        GLOBAL_SESSION_HISTORY.append({'role': 'assistant', 'content': ai_reply})
+                        
+                        # 限制滑动窗口：最多保留 3 轮（6条）对话
+                        if len(GLOBAL_SESSION_HISTORY) > 6:
+                            GLOBAL_SESSION_HISTORY = GLOBAL_SESSION_HISTORY[-6:]
+
                     print(f"[AI 智能回复]: {result['reply']}")
                     await websocket.send(json.dumps(result, ensure_ascii=False))
                 else:

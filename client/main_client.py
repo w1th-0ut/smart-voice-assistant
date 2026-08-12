@@ -87,6 +87,8 @@ async def main():
     print("系统就绪！对着麦克风喊【小爱同学】")
     print("==========================================")
 
+    ws = None
+
     while True:
         data = mic_stream.read(CHUNK, exception_on_overflow=False)
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -97,11 +99,19 @@ async def main():
 
         keyword = kws.get_result(kws_stream)
         if keyword:
+            if ws is None or getattr(ws, 'open', False) is False:
+                try:
+                    ws = await websockets.connect(SERVER_URI)
+                except Exception as e:
+                    print(f"连接服务端失败: {e}")
+                    ws = None
+                    continue
+
             try:
-                async with websockets.connect(SERVER_URI) as websocket:
-                    await record_and_send(websocket, mic_stream)
+                await record_and_send(ws, mic_stream)
             except Exception as e:
-                print(f"连接服务端错误: {e}")
+                print(f"服务端通信错误: {e}")
+                ws = None
             
             kws_stream = kws.create_stream()
             print("系统已重新就绪，随时呼叫【小爱同学】...")
